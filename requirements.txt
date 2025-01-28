@@ -4,3 +4,4 @@ Pillow
 google-generativeai
 mediapipe
 streamlit
+streamlit_webrtc
