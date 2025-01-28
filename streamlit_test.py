@@ -1,12 +1,11 @@
 import cv2
 import numpy as np
-import base64
 from PIL import Image
-import io
 import google.generativeai as genai
 from datetime import datetime
 import mediapipe as mp
 import streamlit as st
+from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
 
 # Configure Gemini API
 GOOGLE_API_KEY = 'AIzaSyDkLlJFajsNu1mJ2bek7dJGyAtFu05bYVI'
@@ -100,113 +99,82 @@ def get_gemini_prediction(image, previous_prediction=None):
     except Exception as e:
         return f"Error in prediction: {str(e)}"
 
-def cleanup_resources(cap=None):
-    """Clean up camera and window resources"""
-    print("Cleaning up resources...")
-    if 'hands' in globals():
-        hands.close()
-    if cap is not None:
-        cap.release()
+class VideoTransformer(VideoTransformerBase):
+    def __init__(self):
+        self.previous_prediction = None
+        self.roi_coords = (80, 400, 200, 520)  # (top, bottom, left, right)
 
-def initialize_camera():
-    """Initialize and configure the camera"""
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        raise RuntimeError("Error: Could not open camera")
+    def transform(self, frame):
+        frame = frame.to_ndarray(format="bgr24")
         
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    return cap
+        # Process the frame
+        frame, roi, _ = self.process_frame(frame, self.roi_coords, self.previous_prediction)
+        
+        # Display the frame
+        return frame
 
-def process_frame(frame, roi_coords, previous_prediction):
-    roi_top, roi_bottom, roi_left, roi_right = roi_coords
-    
-    # Mirror the frame for more intuitive interaction
-    frame = cv2.flip(frame, 1)
-    
-    # Draw ROI rectangle
-    cv2.rectangle(frame, (roi_left, roi_top), (roi_right, roi_bottom), (0, 255, 0), 2)
-    
-    # Extract and process ROI
-    roi = frame[roi_top:roi_bottom, roi_left:roi_right]
-    if roi is None or roi.size == 0:
-        return frame, roi, None
+    def process_frame(self, frame, roi_coords, previous_prediction):
+        roi_top, roi_bottom, roi_left, roi_right = roi_coords
         
-    processed_mask, annotated_roi = process_hand_region(roi)
-    
-    # Only proceed with overlay if we have valid mask and ROI
-    if processed_mask is not None and annotated_roi is not None:
-        mask_indices = processed_mask > 0
-        if np.any(mask_indices):
-            display_roi = roi.copy()
-            green_overlay = np.full_like(roi, [0, 255, 0])
-            display_roi[mask_indices] = cv2.addWeighted(
-                roi[mask_indices], 0.7,
-                green_overlay[mask_indices], 0.3,
-                0
-            )
-            frame[roi_top:roi_bottom, roi_left:roi_right] = display_roi
-        else:
-            frame[roi_top:roi_bottom, roi_left:roi_right] = roi
-    
-    # Add instructions and previous prediction to frame
-    cv2.putText(frame, "Press 'capture' below to capture", (10, 30), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-    if previous_prediction:
-        cv2.putText(frame, f"Previous Word: {previous_prediction}", (10, 60),
+        # Mirror the frame for more intuitive interaction
+        frame = cv2.flip(frame, 1)
+        
+        # Draw ROI rectangle
+        cv2.rectangle(frame, (roi_left, roi_top), (roi_right, roi_bottom), (0, 255, 0), 2)
+        
+        # Extract and process ROI
+        roi = frame[roi_top:roi_bottom, roi_left:roi_right]
+        if roi is None or roi.size == 0:
+            return frame, roi, None
+        
+        processed_mask, annotated_roi = process_hand_region(roi)
+        
+        # Only proceed with overlay if we have valid mask and ROI
+        if processed_mask is not None and annotated_roi is not None:
+            mask_indices = processed_mask > 0
+            if np.any(mask_indices):
+                display_roi = roi.copy()
+                green_overlay = np.full_like(roi, [0, 255, 0])
+                display_roi[mask_indices] = cv2.addWeighted(
+                    roi[mask_indices], 0.7,
+                    green_overlay[mask_indices], 0.3,
+                    0
+                )
+                frame[roi_top:roi_bottom, roi_left:roi_right] = display_roi
+            else:
+                frame[roi_top:roi_bottom, roi_left:roi_right] = roi
+        
+        # Add instructions and previous prediction to frame
+        cv2.putText(frame, "Press 'Capture' to predict", (10, 30), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-    
-    return frame, roi, processed_mask
-
-def save_capture(roi, prediction):
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"capture_{prediction}.jpg"
-    cv2.imwrite(filename, roi)
-    print(f"\nPrediction: {prediction}")
-    print(f"Frame saved as {filename}")
+        if previous_prediction:
+            cv2.putText(frame, f"Previous Word: {previous_prediction}", (10, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        
+        return frame, roi, processed_mask
 
 def main():
     st.title("Indian Sign Language Detection")
     st.write("Position your hand in the green rectangle and press 'Capture' to predict the gesture.")
 
-    # Define ROI coordinates
-    roi_coords = (80, 400, 200, 520)  # (top, bottom, left, right)
-    previous_prediction = None
-    cap = None
+    # Initialize WebRTC streamer
+    ctx = webrtc_streamer(
+        key="example",
+        video_transformer_factory=VideoTransformer,
+        async_transform=True,
+    )
 
-    try:
-        cap = initialize_camera()
-        frame_placeholder = st.empty()
-        capture_button = st.button("Capture")
-
-        while True:
-            ret, frame = cap.read()
-            if not ret or frame is None:
-                st.error("Error: Failed to grab frame")
-                break
-                
-            try:
-                frame, roi, processed_mask = process_frame(frame, roi_coords, previous_prediction)
-                
-                # Display the frame in the Streamlit app
-                frame_placeholder.image(frame, channels="BGR", use_column_width=True)
-                
-                if capture_button and roi is not None and roi.size > 0:
-                    prediction = get_gemini_prediction(roi, previous_prediction)
-                    previous_prediction = prediction
-                    save_capture(roi, prediction)
-                    st.success(f"Prediction: {prediction}")
-                    capture_button = False
-                    
-            except Exception as e:
-                st.error(f"Error in main loop: {str(e)}")
-                continue
-                
-    except Exception as e:
-        st.error(f"Fatal error: {str(e)}")
-    
-    finally:
-        cleanup_resources(cap)
+    if ctx.video_transformer:
+        if st.button("Capture"):
+            roi = ctx.video_transformer.process_frame(
+                ctx.video_transformer.frame,
+                ctx.video_transformer.roi_coords,
+                ctx.video_transformer.previous_prediction
+            )[1]
+            if roi is not None and roi.size > 0:
+                prediction = get_gemini_prediction(roi, ctx.video_transformer.previous_prediction)
+                ctx.video_transformer.previous_prediction = prediction
+                st.success(f"Prediction: {prediction}")
 
 if __name__ == "__main__":
     main()
