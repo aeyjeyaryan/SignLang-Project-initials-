@@ -9,7 +9,7 @@ import mediapipe as mp
 import streamlit as st
 
 # Configure Gemini API
-GOOGLE_API_KEY = 'AIzaSyDkLlJFajsNu1mJ2bek7dJGyAtFu05bYVI'
+GOOGLE_API_KEY = ''
 genai.configure(api_key=GOOGLE_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
